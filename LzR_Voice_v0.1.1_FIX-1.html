@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>LzR Voice 0.1.1</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#0d0d10;color:#fff;font-family:Arial,sans-serif}
+.app{max-width:560px;margin:auto;min-height:100vh;padding:22px 16px 30px}
+h1{text-align:center;margin:18px 0 5px;font-size:30px}.sub{text-align:center;color:#999;margin-bottom:25px}
+.card{background:#17171c;border:1px solid #2a2a32;border-radius:20px;padding:20px}
+label{display:block;color:#aaa;margin:13px 0 7px;font-size:14px}
+input{width:100%;padding:14px;border-radius:13px;border:1px solid #383842;background:#101014;color:#fff;font-size:17px}
+button{width:100%;padding:15px;margin-top:12px;border:0;border-radius:14px;background:#08a9d5;color:#fff;font-size:16px;font-weight:700}
+button:disabled{opacity:.5}.gray{background:#2b2b33}.red{background:#a72e3d}.green{background:#159866}
+.status{margin-top:15px;padding:12px;border-radius:12px;background:#101014;color:#c7c7cf;line-height:1.45;font-size:14px;white-space:pre-wrap}
+.err{color:#ff8995}.hidden{display:none}
+.top{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.people{margin-top:15px;display:grid;gap:8px}.person{display:flex;align-items:center;gap:10px;background:#101014;border:1px solid #292930;padding:11px;border-radius:13px}
+.avatar{width:38px;height:38px;border-radius:50%;background:#292930;display:grid;place-items:center;font-weight:bold}.name{flex:1}
+.controls{display:grid;grid-template-columns:1fr 1fr;gap:10px}.controls button{margin-top:10px}
+</style>
+</head>
+<body>
+<div class="app">
+<h1>LzR Voice</h1><div class="sub">Голосовой чат • тест 0.1.1</div>
+
+<div id="joinCard" class="card">
+<label>Ваше имя</label>
+<input id="name" maxlength="24" placeholder="Например: ЛамзамоR">
+
+<label>Код комнаты</label>
+<input id="roomCode" maxlength="32" placeholder="Например: 123456">
+
+<button id="create">Создать комнату</button>
+<button id="join" class="gray">Войти в комнату</button>
+
+<div id="status" class="status">Готово. Нажмите «Создать комнату».</div>
+</div>
+
+<div id="roomCard" class="card hidden">
+<div class="top"><div><b style="font-size:20px">Комната</b><div id="roomText"></div></div><b id="count">0 / 10</b></div>
+<div id="people" class="people"></div>
+<div class="controls">
+<button id="mic" class="green">🎤 Микрофон включён</button>
+<button id="leave" class="red">📞 Выйти</button>
+</div>
+<div id="roomStatus" class="status"></div>
+</div>
+</div>
+
+<!-- Официальный UMD-вариант LiveKit Client SDK -->
+<script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+
+<script>
+window.addEventListener("load", function () {
+  const TOKEN_SERVER_ID = "lzrvoise-x0dd2s";
+  const MAX = 10;
+
+  const $ = id => document.getElementById(id);
+  const joinCard=$("joinCard"), roomCard=$("roomCard"), status=$("status");
+  const nameInput=$("name"), roomInput=$("roomCode"), create=$("create"), join=$("join");
+  const people=$("people"), count=$("count"), mic=$("mic"), leave=$("leave");
+  const roomText=$("roomText"), roomStatus=$("roomStatus");
+
+  function setStatus(t, err=false){ status.textContent=t; status.className="status"+(err?" err":""); }
+  function fail(t){ setStatus(t,true); create.disabled=false; join.disabled=false; }
+
+  // Если CDN не загрузился, теперь это будет видно пользователю, а не "ничего не происходит".
+  if (!window.LivekitClient) {
+    fail("Не загрузилась библиотека LiveKit.\nПроверь интернет и перезагрузи страницу.");
+    return;
+  }
+
+  const LK = window.LivekitClient;
+  if (!LK.Room || !LK.TokenSource) {
+    fail("LiveKit загрузился, но TokenSource недоступен.\nОткрой файл заново после обновления страницы.");
+    return;
+  }
+
+  let room = null;
+
+  function code(){
+    return String(Math.floor(100000 + Math.random()*900000));
+  }
+
+  function render(){
+    if(!room)return;
+    const list=[room.localParticipant,...room.remoteParticipants.values()];
+    count.textContent=list.length+" / "+MAX;
+    people.innerHTML="";
+    list.forEach(p=>{
+      const row=document.createElement("div"); row.className="person";
+      const av=document.createElement("div"); av.className="avatar";
+      av.textContent=(p.name||p.identity||"?").slice(0,1).toUpperCase();
+      const n=document.createElement("div"); n.className="name";
+      n.textContent=p.name||p.identity||"Участник";
+      const state=document.createElement("div"); state.textContent=p.isSpeaking?"🗣️":"🎤";
+      row.append(av,n,state); people.append(row);
+    });
+  }
+
+  function attach(track){
+    if(track.kind!==LK.Track.Kind.Audio)return;
+    const audio=track.attach();
+    audio.autoplay=true;
+    document.body.appendChild(audio);
+  }
+
+  async function connect(){
+    const name=nameInput.value.trim();
+    const rn=roomInput.value.trim();
+
+    if(!name){setStatus("Сначала введи своё имя.",true);return;}
+    if(!rn){setStatus("Нет кода комнаты.",true);return;}
+
+    create.disabled=true; join.disabled=true;
+    setStatus("Шаг 1/3: получаем токен LiveKit…");
+
+    try{
+      const source=LK.TokenSource.developmentTokenServer(TOKEN_SERVER_ID);
+
+      setStatus("Шаг 2/3: подключаемся к комнате…");
+      const credentials=await source.fetch({
+        roomName:rn,
+        participantName:name
+      });
+
+      if(!credentials || !credentials.serverUrl || !credentials.participantToken){
+        throw new Error("LiveKit не вернул данные для подключения.");
+      }
+
+      room=new LK.Room();
+
+      room
+        .on(LK.RoomEvent.TrackSubscribed,(track)=>attach(track))
+        .on(LK.RoomEvent.TrackUnsubscribed,(track)=>track.detach())
+        .on(LK.RoomEvent.ParticipantConnected,(p)=>{
+          render();
+          roomStatus.textContent=(p.name||p.identity)+" вошёл в комнату.";
+        })
+        .on(LK.RoomEvent.ParticipantDisconnected,(p)=>{
+          render();
+          roomStatus.textContent=(p.name||p.identity)+" вышел из комнаты.";
+        })
+        .on(LK.RoomEvent.ActiveSpeakersChanged,()=>render())
+        .on(LK.RoomEvent.Disconnected,()=>{roomStatus.textContent="Соединение закрыто.";});
+
+      await room.connect(credentials.serverUrl,credentials.participantToken);
+
+      if(room.remoteParticipants.size >= MAX){
+        await room.disconnect(); room=null;
+        throw new Error("Комната уже заполнена (максимум 10 человек).");
+      }
+
+      setStatus("Шаг 3/3: включаем микрофон…");
+      await room.localParticipant.setMicrophoneEnabled(true);
+
+      joinCard.classList.add("hidden");
+      roomCard.classList.remove("hidden");
+      roomText.textContent="Код: "+rn;
+      roomStatus.textContent="✅ Подключено. Теперь можно говорить.";
+      render();
+
+    }catch(e){
+      console.error(e);
+      fail("Ошибка подключения:\n"+(e && e.message ? e.message : String(e)));
+    }
+  }
+
+  create.onclick=function(){
+    const newCode=code();
+    roomInput.value=newCode;
+    setStatus("Комната "+newCode+" создана локально.\nПодключаемся…");
+    connect();
+  };
+
+  join.onclick=connect;
+
+  mic.onclick=async function(){
+    if(!room)return;
+    const next=!room.localParticipant.isMicrophoneEnabled;
+    await room.localParticipant.setMicrophoneEnabled(next);
+    mic.textContent=next?"🎤 Микрофон включён":"🔇 Микрофон выключен";
+    mic.className=next?"green":"gray";
+    render();
+  };
+
+  leave.onclick=async function(){
+    if(room) await room.disconnect();
+    document.querySelectorAll("audio").forEach(x=>x.remove());
+    room=null;
+    roomCard.classList.add("hidden");
+    joinCard.classList.remove("hidden");
+    create.disabled=false; join.disabled=false;
+    setStatus("Вы вышли из комнаты. Можно подключиться снова.");
+  };
+
+  nameInput.value=localStorage.getItem("lzrVoiceName")||"";
+  nameInput.oninput=()=>localStorage.setItem("lzrVoiceName",nameInput.value);
+});
+</script>
+</body>
+</html>
